@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = "A CLI that swaps a Swift Package Manager dependency in an .xcodeproj between its " \
                       "remote (git) reference and a local checkout in an adjacent sibling folder, and back " \
                       "again, without churning the underlying pbxproj object IDs."
-  spec.homepage = "https://github.com/sushant40/toggle-local-spm"
+  spec.homepage = "https://github.com/squeaky-nose/toggle-local-spm"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
 

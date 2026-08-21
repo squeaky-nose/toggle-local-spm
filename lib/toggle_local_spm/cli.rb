@@ -5,17 +5,20 @@ require "json"
 require "pathname"
 
 module ToggleLocalSpm
-  # Toggles a Swift Package Manager dependency in the .xcodeproj found in the
-  # current directory between its remote (git) reference and a local checkout
-  # in an adjacent sibling folder (e.g. ../<package-name>). Run again on the
-  # same package to swap back to the original remote reference. Afterwards
-  # runs `xcodebuild -resolvePackageDependencies` so Package.resolved is
-  # updated to match (requires network access and, for private repos, a
-  # working SSH key).
+  # Toggles one or more Swift Package Manager dependencies in the .xcodeproj
+  # found in the current directory between their remote (git) reference and a
+  # local checkout. Run again on the same package to swap back to the
+  # original remote reference. Afterwards, optionally runs
+  # `xcodebuild -resolvePackageDependencies` so Package.resolved is updated
+  # to match (requires network access and, for private repos, a working SSH
+  # key).
   #
   # Run from the root of the Xcode project's repo (the directory containing
-  # the .xcodeproj), with the local checkout of the dependency expected to be
-  # an adjacent sibling directory.
+  # the .xcodeproj). A `spm-local-overrides.json` file is kept at the repo
+  # root as a permanent record of each package's remote reference and local
+  # checkout path (see README) — which reference type (remote vs. local) is
+  # currently wired up in the pbxproj is always the source of truth for
+  # whether a package is "on" (local) or "off" (remote), not this file.
   class CLI
     RemoteRef = Xcodeproj::Project::Object::XCRemoteSwiftPackageReference
     LocalRef = Xcodeproj::Project::Object::XCLocalSwiftPackageReference
@@ -26,9 +29,9 @@ module ToggleLocalSpm
     end
 
     def initialize(argv, root: Dir.pwd)
-      @package_name = argv[0]
+      @package_names = argv
       @root = Pathname.new(root).expand_path
-      @state_file = @root + ".spm-local-overrides.json"
+      @state_file = @root + "spm-local-overrides.json"
     end
 
     def run
@@ -38,18 +41,20 @@ module ToggleLocalSpm
       abort_with("no Swift package dependencies found in the project") if package_refs.empty?
 
       state = load_state
-      selected = select_package(package_refs)
+      selected_refs = select_packages(package_refs)
 
-      if selected.is_a?(RemoteRef)
-        swap_remote_to_local(project, xcodeproj_path, selected, state)
-      else
-        swap_local_to_remote(project, selected, state)
+      selected_refs.each do |ref|
+        if ref.is_a?(RemoteRef)
+          swap_remote_to_local(project, xcodeproj_path, ref, state)
+        else
+          swap_local_to_remote(project, xcodeproj_path, ref, state)
+        end
       end
 
       save_state(state)
       project.save
 
-      resolve_package_dependencies(xcodeproj_path)
+      resolve_package_dependencies(xcodeproj_path) if prompt_resolve?
 
       puts "Done."
     end
@@ -75,12 +80,14 @@ module ToggleLocalSpm
       abort_with("could not parse #{@state_file}: #{e.message}")
     end
 
+    # The state file is a permanent record: it is created on first use and
+    # never deleted, and entries are only ever added to or updated, never
+    # removed — even after a package is swapped back to remote. This lets a
+    # developer hand-edit a package's "localPath" (e.g. to point at a
+    # differently-located or differently-named checkout) without losing the
+    # recorded repositoryURL/requirement needed to swap back to remote.
     def save_state(state)
-      if state.empty?
-        @state_file.delete if @state_file.exist?
-      else
-        @state_file.write(JSON.pretty_generate(state) + "\n")
-      end
+      @state_file.write(JSON.pretty_generate(state) + "\n")
     end
 
     def ref_name(ref)
@@ -122,62 +129,87 @@ module ToggleLocalSpm
       new_ref
     end
 
-    def select_package(package_refs)
-      if @package_name
-        match = package_refs.find { |ref| ref_name(ref).casecmp(@package_name).zero? }
-        unless match
-          names = package_refs.map { |ref| ref_name(ref) }.sort
-          abort_with("no package dependency named '#{@package_name}'. Available: #{names.join(", ")}")
-        end
-        return match
-      end
+    def find_package(package_refs, wanted)
+      match = package_refs.find { |ref| ref_name(ref).casecmp(wanted).zero? }
+      return match if match
 
-      puts "Select a package dependency to toggle:"
+      names = package_refs.map { |ref| ref_name(ref) }.sort
+      abort_with("no package dependency named '#{wanted}'. Available: #{names.join(", ")}")
+    end
+
+    def select_packages(package_refs)
+      return @package_names.map { |wanted| find_package(package_refs, wanted) }.uniq if @package_names.any?
+
+      select_packages_interactively(package_refs)
+    end
+
+    def select_packages_interactively(package_refs)
+      puts "Select package dependencies to toggle (e.g. 1, or 1 3):"
       package_refs.each_with_index do |ref, i|
         kind = ref.is_a?(RemoteRef) ? "remote" : "local"
         puts "  #{i + 1}) #{ref_name(ref)} [#{kind}]"
       end
       print "> "
       choice = $stdin.gets&.strip
-      index = choice.to_i - 1
-      abort_with("invalid selection") unless choice&.match?(/\A\d+\z/) && index.between?(0, package_refs.size - 1)
-      package_refs[index]
+      abort_with("invalid selection") if choice.nil? || choice.empty?
+
+      tokens = choice.split(/[\s,]+/)
+      abort_with("invalid selection '#{choice}'") unless tokens.all? { |t| t.match?(/\A\d+\z/) }
+
+      tokens.map(&:to_i).map do |n|
+        index = n - 1
+        abort_with("invalid selection '#{n}'") unless index.between?(0, package_refs.size - 1)
+        package_refs[index]
+      end.uniq
     end
 
     def swap_remote_to_local(project, xcodeproj_path, ref, state)
       name = ref_name(ref)
-      sibling_dir = @root.parent + name
-      unless sibling_dir.directory? && (sibling_dir + "Package.swift").file?
-        abort_with("expected a local checkout with a Package.swift at #{sibling_dir}")
+      entry = state[name] || {}
+
+      local_dir = entry["localPath"] ? Pathname.new(entry["localPath"]).expand_path(@root) : (@root.parent + name)
+      unless local_dir.directory? && (local_dir + "Package.swift").file?
+        abort_with("expected a local checkout with a Package.swift at #{local_dir} " \
+                   "(set or fix \"localPath\" for '#{name}' in #{@state_file} if it lives elsewhere)")
       end
 
-      relative_path = sibling_dir.relative_path_from(xcodeproj_path.dirname).to_s
+      relative_path = local_dir.relative_path_from(xcodeproj_path.dirname).to_s
 
-      state[name] = {
+      state[name] = entry.merge(
         "repositoryURL" => ref.repositoryURL,
-        "requirement" => ref.requirement
-      }
+        "requirement" => ref.requirement,
+        "localPath" => local_dir.to_s
+      )
 
       replace_ref(project, ref, LocalRef) { |local_ref| local_ref.relative_path = relative_path }
 
       puts "Swapped '#{name}' to local checkout at #{relative_path} (kept resource id #{ref.uuid})"
     end
 
-    def swap_local_to_remote(project, ref, state)
+    def swap_local_to_remote(project, xcodeproj_path, ref, state)
       name = ref_name(ref)
-      saved = state[name]
-      unless saved
-        abort_with("no saved remote reference for '#{name}' (it wasn't swapped to local by this tool). " \
-                    "Remove it manually in Xcode or restore project.pbxproj from git.")
+      entry = state[name]
+      unless entry && entry["repositoryURL"] && entry["requirement"]
+        abort_with("no recorded remote reference for '#{name}' in #{@state_file}. " \
+                    "Add \"repositoryURL\"/\"requirement\" for it manually, or restore project.pbxproj from git.")
       end
+
+      # Backfill localPath in case this entry was created/edited by hand
+      # without one, so the record stays complete going forward.
+      entry["localPath"] ||= (xcodeproj_path.dirname + ref.relative_path).expand_path.to_s
 
       replace_ref(project, ref, RemoteRef) do |remote_ref|
-        remote_ref.repositoryURL = saved["repositoryURL"]
-        remote_ref.requirement = saved["requirement"]
+        remote_ref.repositoryURL = entry["repositoryURL"]
+        remote_ref.requirement = entry["requirement"]
       end
-      state.delete(name)
 
-      puts "Swapped '#{name}' back to remote reference #{saved["repositoryURL"]} (kept resource id #{ref.uuid})"
+      puts "Swapped '#{name}' back to remote reference #{entry["repositoryURL"]} (kept resource id #{ref.uuid})"
+    end
+
+    def prompt_resolve?
+      print "Resolve package dependencies now? [Y/n] "
+      answer = $stdin.gets&.strip
+      answer.nil? || answer.empty? || !answer.match?(/\An/i)
     end
 
     def resolve_package_dependencies(xcodeproj_path)
