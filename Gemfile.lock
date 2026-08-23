@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    toggle-local-spm (2.2.1)
+    toggle-local-spm (3.0.0)
       xcodeproj (>= 1.19, < 2.0)
 
 GEM
