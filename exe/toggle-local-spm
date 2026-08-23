@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "toggle_local_spm"
+
+begin
+  ToggleLocalSpm::CLI.run(ARGV)
+rescue ToggleLocalSpm::Error => e
+  warn "error: #{e.message}"
+  exit 1
+end

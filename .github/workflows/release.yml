@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, bare x.y.z (no "v" prefix) — e.g. 2.3.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - name: Validate version format
+        run: |
+          version="${{ inputs.version }}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version '$version' is not in the required x.y.z format (e.g. 2.3.0) — no 'v' prefix, no pre-release/build suffixes."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+
+      - name: Ensure tag does not already exist
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists on origin — refusing to overwrite an existing release. Choose a different version."
+            exit 1
+          fi
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Bump version.rb
+        run: |
+          OLD_VERSION="$(ruby -Ilib -r toggle_local_spm/version -e 'print ToggleLocalSpm::VERSION')"
+          if [ "$OLD_VERSION" = "$VERSION" ]; then
+            echo "::error::Version ${VERSION} matches the currently released version (${OLD_VERSION}) — nothing to bump."
+            exit 1
+          fi
+          sed -i '' "s/VERSION = \"${OLD_VERSION}\"/VERSION = \"${VERSION}\"/" lib/toggle_local_spm/version.rb
+
+      - name: Regenerate Gemfile.lock
+        run: |
+          bundle config set --local frozen false
+          bundle config set --local deployment false
+          bundle install
+
+      - name: Run test suite
+        run: bundle exec rake test
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/toggle_local_spm/version.rb Gemfile.lock
+          git commit -m "Bump version to ${VERSION}"
+
+      - name: Tag release
+        run: git tag "${TAG}"
+
+      - name: Push commit and tag
+        run: |
+          git push origin HEAD:main
+          git push origin "${TAG}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${TAG}" --title "${TAG}" --generate-notes
+
+      # Publishes via RubyGems.org Trusted Publishing (OIDC) — no stored API
+      # key. Requires a one-time "pending trusted publisher" set up at
+      # https://rubygems.org/profile/oidc/pending_trusted_publishers with
+      # gem name "toggle-local-spm", this repo, workflow filename
+      # "release.yml", and environment "release" (matching the `environment:`
+      # key on this job above).
+      - name: Publish to RubyGems.org
+        uses: rubygems/release-gem@v1
