@@ -41,7 +41,7 @@ module ToggleLocalSpm
     LocalRef = Xcodeproj::Project::Object::XCLocalSwiftPackageReference
     ProductDependency = Xcodeproj::Project::Object::XCSwiftPackageProductDependency
 
-    Candidate = Struct.new(:name, :ref, :type, :resolved_entry, :local_path_known) do
+    Candidate = Struct.new(:name, :ref, :type, :resolved_entry, :tracked) do
       def local?
         ref.is_a?(LocalRef)
       end
@@ -50,11 +50,11 @@ module ToggleLocalSpm
     TYPE_LABELS = { "direct" => "🎯 direct", "indirect" => "🧩 indirect" }.freeze
     STATE_LABELS = { local: "📁 local", remote: "🌏 remote" }.freeze
 
-    MANAGED_LABELS = { set: "✅", found: "📁", not_found: "⚠️" }.freeze
+    MANAGED_LABELS = { set: "✅", found: "📁" }.freeze
     MANAGED_LEGEND = [
       "#{MANAGED_LABELS[:set]}  Local mock set",
-      "#{MANAGED_LABELS[:found]}  Mock not set. Mock found (localPath in spm-local-overrides.json exists)",
-      "#{MANAGED_LABELS[:not_found]}  Mock not set. Mock not found (localPath in spm-local-overrides.json not existing)"
+      "#{MANAGED_LABELS[:found]}  Mock not set. Mock found (recorded in spm-local-overrides.json)",
+      "   Blank — no record for this dependency in spm-local-overrides.json"
     ].freeze
 
     def self.run(argv)
@@ -173,18 +173,14 @@ module ToggleLocalSpm
       direct = refs.map do |ref|
         name = ref_name(ref)
         type = state.dig(name, "type") || "direct"
-        Candidate.new(name, ref, type, nil, local_path_known?(state, name))
+        Candidate.new(name, ref, type, nil, state.key?(name))
       end
 
       resolved = load_resolved_packages(xcodeproj_path)
       indirect = resolved.reject { |name, _| direct.any? { |c| c.name.casecmp(name).zero? } }
-                          .map { |name, info| Candidate.new(name, nil, "indirect", info, local_path_known?(state, name)) }
+                          .map { |name, info| Candidate.new(name, nil, "indirect", info, state.key?(name)) }
 
       direct + indirect
-    end
-
-    def local_path_known?(state, name)
-      !!state.dig(name, "localPath")
     end
 
     def resolved_file_path(xcodeproj_path)
@@ -275,10 +271,9 @@ module ToggleLocalSpm
     end
 
     def managed_label_for(candidate)
-      return MANAGED_LABELS[:set] if candidate.local?
-      return MANAGED_LABELS[:found] if candidate.local_path_known
+      return "" unless candidate.tracked
 
-      MANAGED_LABELS[:not_found]
+      candidate.local? ? MANAGED_LABELS[:set] : MANAGED_LABELS[:found]
     end
 
     # --- Toggling -------------------------------------------------------

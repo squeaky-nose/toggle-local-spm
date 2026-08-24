@@ -80,13 +80,13 @@ the Managed column, e.g.:
 ```
   #  Package        Type        State     Managed
   1  my-shared-ios  🎯 direct    📁 local   ✅
-  2  DeviceKit      🎯 direct    🌏 remote  ⚠️
+  2  DeviceKit      🎯 direct    🌏 remote
   3  my-model-lib   🧩 indirect  🌏 remote  📁
 
 Legend:
   ✅  Local mock set
-  📁  Mock not set. Mock found (localPath in spm-local-overrides.json exists)
-  ⚠️  Mock not set. Mock not found (localPath in spm-local-overrides.json not existing)
+  📁  Mock not set. Mock found (recorded in spm-local-overrides.json)
+     Blank — no record for this dependency in spm-local-overrides.json
 ```
 
 Each package toggles independently based on what's currently wired up in the

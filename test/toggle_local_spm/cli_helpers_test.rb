@@ -59,6 +59,24 @@ class ToggleLocalSpmCLIHelpersTest < Minitest::Test
     end
   end
 
+  def test_managed_label_is_blank_when_untracked
+    remote_ref = @project.new(Xcodeproj::Project::Object::XCRemoteSwiftPackageReference)
+    candidate = ToggleLocalSpm::CLI::Candidate.new("some-package", remote_ref, "direct", nil, false)
+    assert_equal "", @cli.send(:managed_label_for, candidate)
+  end
+
+  def test_managed_label_is_set_when_tracked_and_local
+    local_ref = @project.new(Xcodeproj::Project::Object::XCLocalSwiftPackageReference)
+    candidate = ToggleLocalSpm::CLI::Candidate.new("some-package", local_ref, "direct", nil, true)
+    assert_equal "✅", @cli.send(:managed_label_for, candidate)
+  end
+
+  def test_managed_label_is_found_when_tracked_but_remote
+    remote_ref = @project.new(Xcodeproj::Project::Object::XCRemoteSwiftPackageReference)
+    candidate = ToggleLocalSpm::CLI::Candidate.new("some-package", remote_ref, "direct", nil, true)
+    assert_equal "📁", @cli.send(:managed_label_for, candidate)
+  end
+
   def test_detect_scheme_returns_nil_when_no_schemes_exist
     Dir.mktmpdir do |root|
       xcodeproj = Pathname.new(root) + "Sample.xcodeproj"
