@@ -41,7 +41,7 @@ module ToggleLocalSpm
     LocalRef = Xcodeproj::Project::Object::XCLocalSwiftPackageReference
     ProductDependency = Xcodeproj::Project::Object::XCSwiftPackageProductDependency
 
-    Candidate = Struct.new(:name, :ref, :type, :resolved_entry, :managed) do
+    Candidate = Struct.new(:name, :ref, :type, :resolved_entry, :local_path_known) do
       def local?
         ref.is_a?(LocalRef)
       end
@@ -49,6 +49,13 @@ module ToggleLocalSpm
 
     TYPE_LABELS = { "direct" => "🎯 direct", "indirect" => "🧩 indirect" }.freeze
     STATE_LABELS = { local: "📁 local", remote: "🌏 remote" }.freeze
+
+    MANAGED_LABELS = { set: "✅", found: "📁", not_found: "⚠️" }.freeze
+    MANAGED_LEGEND = [
+      "#{MANAGED_LABELS[:set]}  Local mock set",
+      "#{MANAGED_LABELS[:found]}  Mock not set. Mock found (localPath in spm-local-overrides.json exists)",
+      "#{MANAGED_LABELS[:not_found]}  Mock not set. Mock not found (localPath in spm-local-overrides.json not existing)"
+    ].freeze
 
     def self.run(argv)
       new(argv).run
@@ -166,14 +173,18 @@ module ToggleLocalSpm
       direct = refs.map do |ref|
         name = ref_name(ref)
         type = state.dig(name, "type") || "direct"
-        Candidate.new(name, ref, type, nil, state.key?(name))
+        Candidate.new(name, ref, type, nil, local_path_known?(state, name))
       end
 
       resolved = load_resolved_packages(xcodeproj_path)
       indirect = resolved.reject { |name, _| direct.any? { |c| c.name.casecmp(name).zero? } }
-                          .map { |name, info| Candidate.new(name, nil, "indirect", info, state.key?(name)) }
+                          .map { |name, info| Candidate.new(name, nil, "indirect", info, local_path_known?(state, name)) }
 
       direct + indirect
+    end
+
+    def local_path_known?(state, name)
+      !!state.dig(name, "localPath")
     end
 
     def resolved_file_path(xcodeproj_path)
@@ -242,9 +253,12 @@ module ToggleLocalSpm
       candidates.each_with_index do |c, i|
         type_label = TYPE_LABELS.fetch(c.type, c.type).ljust(type_width)
         state_label = STATE_LABELS[c.local? ? :local : :remote].ljust(state_width)
-        managed_label = c.managed ? "✅" : ""
-        puts "  #{(i + 1).to_s.rjust(index_width)}  #{c.name.ljust(name_width)}  #{type_label}  #{state_label}  #{managed_label}"
+        puts "  #{(i + 1).to_s.rjust(index_width)}  #{c.name.ljust(name_width)}  #{type_label}  #{state_label}  #{managed_label_for(c)}"
       end
+
+      puts
+      puts "Legend:"
+      MANAGED_LEGEND.each { |line| puts "  #{line}" }
 
       print "\n> "
       choice = $stdin.gets&.strip
@@ -258,6 +272,13 @@ module ToggleLocalSpm
         abort_with("invalid selection '#{n}'") unless index.between?(0, candidates.size - 1)
         candidates[index]
       end.uniq
+    end
+
+    def managed_label_for(candidate)
+      return MANAGED_LABELS[:set] if candidate.local?
+      return MANAGED_LABELS[:found] if candidate.local_path_known
+
+      MANAGED_LABELS[:not_found]
     end
 
     # --- Toggling -------------------------------------------------------

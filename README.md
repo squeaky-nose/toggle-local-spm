@@ -73,14 +73,20 @@ bundle exec toggle-local-spm
 
 The interactive menu lists every direct dependency (from the project itself)
 and every indirect one (from `Package.resolved`) as a table, each tagged with
-its type, current state, and whether it has a record in
-`spm-local-overrides.json` (see below), e.g.:
+its type, current state, and whether it has a known local checkout recorded
+in `spm-local-overrides.json` (see below), followed by a legend explaining
+the Managed column, e.g.:
 
 ```
   #  Package        Type        State     Managed
-  1  my-shared-ios  🎯 direct    🌏 remote  ✅
-  2  DeviceKit      🎯 direct    🌏 remote
-  3  my-model-lib   🧩 indirect  🌏 remote
+  1  my-shared-ios  🎯 direct    📁 local   ✅
+  2  DeviceKit      🎯 direct    🌏 remote  ⚠️
+  3  my-model-lib   🧩 indirect  🌏 remote  📁
+
+Legend:
+  ✅  Local mock set
+  📁  Mock not set. Mock found (localPath in spm-local-overrides.json exists)
+  ⚠️  Mock not set. Mock not found (localPath in spm-local-overrides.json not existing)
 ```
 
 Each package toggles independently based on what's currently wired up in the
